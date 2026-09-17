@@ -33,6 +33,19 @@ export function renderAppHtml(): string {
   }
   button.danger { background: #e5484d; color: white; }
   .btn-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .switch { position: relative; width: 46px; height: 26px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute; cursor: pointer; inset: 0;
+    background: #b0b0b0; border-radius: 26px; transition: 0.2s;
+  }
+  .slider:before {
+    content: ""; position: absolute; height: 20px; width: 20px;
+    left: 3px; top: 3px; background: white; border-radius: 50%; transition: 0.2s;
+  }
+  input:checked + .slider { background: var(--tg-theme-button-color, #34c759); }
+  input:checked + .slider:before { transform: translateX(20px); }
   .admin-item {
     display: flex; align-items: center; justify-content: space-between;
     padding: 8px 0; border-bottom: 1px solid rgba(128,128,128,0.2);
@@ -73,6 +86,20 @@ export function renderAppHtml(): string {
         </div>
       </div>
       <div id="adminManageHint" class="hint" hidden>Adminlarni boshqarish va egalikni o'tkazish faqat asosiy admin uchun.</div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="label">📣 Hammaga yuborish</div>
+          <div class="hint">Yoqilsa, botga /start bosgan HAR BIR foydalanuvchi ham ZOOM eslatmalarini oladi. O'chirilsa, eslatma faqat asosiy adminga (sizga) keladi.</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="broadcastToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="hint" style="margin-top:10px">Botga /start bosganlar soni: <span id="subscriberCount">0</span></div>
     </div>
 
     <div class="card">
@@ -160,6 +187,8 @@ export function renderAppHtml(): string {
     renderAdmins(state.admins, state.ownerId, isOwnerMe);
     document.getElementById("adminManageArea").hidden = !isOwnerMe;
     document.getElementById("adminManageHint").hidden = isOwnerMe;
+    document.getElementById("broadcastToggle").checked = state.broadcastEnabled;
+    document.getElementById("subscriberCount").textContent = state.subscriberCount;
     renderEvents(state.pending);
   }
 
@@ -173,6 +202,17 @@ export function renderAppHtml(): string {
       statusEl.textContent = "Xatolik: " + e.message;
     }
   }
+
+  document.getElementById("broadcastToggle").addEventListener("change", async () => {
+    const checked = document.getElementById("broadcastToggle").checked;
+    try {
+      const state = await api("/api/action", { action: checked ? "broadcast_on" : "broadcast_off" });
+      render(state);
+      tg.HapticFeedback.notificationOccurred("success");
+    } catch (e) {
+      tg.showAlert("Xatolik: " + e.message);
+    }
+  });
 
   document.getElementById("addAdminBtn").addEventListener("click", async () => {
     const input = document.getElementById("newAdminId");

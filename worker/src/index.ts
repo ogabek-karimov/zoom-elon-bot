@@ -3,11 +3,15 @@ import { validateInitData } from "./auth";
 import { telegramApi, type InlineKeyboard } from "./telegram";
 import {
   addAdmin,
+  addSubscriber,
   getAdmins,
   getOwner,
+  getSubscribers,
   isAdmin,
+  isBroadcastEnabled,
   isOwner,
   removeAdmin,
+  setBroadcastEnabled,
   transferOwnership,
 } from "./store";
 import type { Env, TelegramCallbackQuery, TelegramMessage, TelegramUpdate, TelegramUser } from "./types";
@@ -56,6 +60,13 @@ async function syncAdminMenuButton(
 function panelKeyboard(appUrl: string): InlineKeyboard {
   return { inline_keyboard: [[{ text: "🖥 Boshqaruv panelini ochish", web_app: { url: appUrl } }]] };
 }
+
+/** Har kimga (admin bo'lishi shart emas) /start bosganda ko'rsatiladigan tanishtiruv matni. */
+const WELCOME_TEXT =
+  "Ushbu bot O'zbekiston davlat jahon tillari universitetida bo'lib o'tadigan Kengaytirilgan " +
+  "kafedra ilmiy muhokamasi, ilmiy seminar muhokamasi, Yetakchi tashkilot dissertatsiya ishi " +
+  "muhokamasi, (PhD yoki DSc) dissertatsiyasi himoyasi Ilmiy kengash majlislari zoom online " +
+  "platforma orqali bo'lib o'tishi haqida xabardor qilib turadi.";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -124,8 +135,14 @@ async function authenticateApp(
 }
 
 async function buildAppState(env: Env) {
-  const [admins, ownerId, pending] = await Promise.all([getAdmins(env), getOwner(env), getPendingEvents(env)]);
-  return { admins, ownerId, pending };
+  const [admins, ownerId, pending, broadcastEnabled, subscribers] = await Promise.all([
+    getAdmins(env),
+    getOwner(env),
+    getPendingEvents(env),
+    isBroadcastEnabled(env),
+    getSubscribers(env),
+  ]);
+  return { admins, ownerId, pending, broadcastEnabled, subscriberCount: subscribers.length };
 }
 
 async function handleApiState(request: Request, env: Env): Promise<Response> {
@@ -169,6 +186,12 @@ async function handleApiAction(request: Request, env: Env): Promise<Response> {
       }
       break;
     }
+    case "broadcast_on":
+      await setBroadcastEnabled(env, true);
+      break;
+    case "broadcast_off":
+      await setBroadcastEnabled(env, false);
+      break;
     default:
       return new Response("Noma'lum amal.", { status: 400 });
   }
@@ -226,17 +249,21 @@ async function handleCommand(
         // Birinchi marta ishga tushganda - buyruq yozgan birinchi odam avtomatik egasi bo'ladi.
         await addAdmin(env, userId);
       }
+
+      // Kimligidan qat'iy nazar (admin bo'lishi shart emas) - /start bosgan har bir odam
+      // obunachi deb qayd etiladi. Ular ZOOM eslatmalarini olishi-olmasligi admin panelda
+      // yoqilgan/o'chirilgan "hammaga yuborish" tugmasiga bog'liq.
+      await addSubscriber(env, userId);
+
       if (await isAdmin(env, userId)) {
         await syncAdminMenuButton(tg, env, userId, true);
         await tg.sendMessage(
           chatId,
-          "Salom! Bu bot uzswlu.uz saytidagi ZOOM orqali o'tkaziladigan tadbirlar haqida " +
-            "eslatma yuboradi (tadbirdan 1 kun oldin). Boshqaruv panelini ochish uchun ☰ Menu " +
-            "tugmasini yoki /panel buyrug'ini bosing.",
+          `${WELCOME_TEXT}\n\nBoshqaruv panelini ochish uchun ☰ Menu tugmasini yoki /panel buyrug'ini bosing.`,
           panelKeyboard(`${env.APP_BASE_URL}/app`),
         );
       } else {
-        await tg.sendMessage(chatId, "Salom! Bu bot faqat adminlar uchun mo'ljallangan.");
+        await tg.sendMessage(chatId, WELCOME_TEXT);
       }
       return;
     }

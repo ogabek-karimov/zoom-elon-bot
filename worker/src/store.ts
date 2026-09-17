@@ -2,6 +2,9 @@ import type { Env } from "./types";
 
 const ADMINS_KEY = "admins";
 const OWNER_KEY = "owner";
+const SUBSCRIBERS_KEY = "subscribers";
+const SUBSCRIBER_CAP = 5000; // cheksiz o'smasin - eng eskilari chetlanadi
+const BROADCAST_ENABLED_KEY = "broadcast_enabled";
 
 /** Reads the admin list from KV, seeding it from ADMIN_IDS on first use. */
 export async function getAdmins(env: Env): Promise<number[]> {
@@ -67,4 +70,37 @@ export async function transferOwnership(env: Env, newOwnerId: number): Promise<b
   if (!admins.includes(newOwnerId)) return false;
   await env.BOT_KV.put(OWNER_KEY, String(newOwnerId));
   return true;
+}
+
+/**
+ * Everyone who has ever pressed /start - not just admins. Whether they actually receive
+ * ZOOM eslatmalar depends on isBroadcastEnabled() (an admin-controlled on/off switch); this
+ * list just tracks who to notify IF that's turned on. Capped so it can't grow unbounded.
+ */
+export async function getSubscribers(env: Env): Promise<number[]> {
+  const raw = await env.BOT_KV.get(SUBSCRIBERS_KEY);
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw) as number[];
+  } catch {
+    return [];
+  }
+}
+
+export async function addSubscriber(env: Env, userId: number): Promise<void> {
+  const subscribers = await getSubscribers(env);
+  if (subscribers.includes(userId)) return;
+  subscribers.push(userId);
+  const capped = subscribers.length > SUBSCRIBER_CAP ? subscribers.slice(subscribers.length - SUBSCRIBER_CAP) : subscribers;
+  await env.BOT_KV.put(SUBSCRIBERS_KEY, JSON.stringify(capped));
+}
+
+/** Master on/off switch: should ZOOM eslatmalar go out to every subscriber, or only the owner? Off by default. */
+export async function isBroadcastEnabled(env: Env): Promise<boolean> {
+  const raw = await env.BOT_KV.get(BROADCAST_ENABLED_KEY);
+  return raw === "true";
+}
+
+export async function setBroadcastEnabled(env: Env, enabled: boolean): Promise<void> {
+  await env.BOT_KV.put(BROADCAST_ENABLED_KEY, String(enabled));
 }

@@ -1,6 +1,31 @@
-import { getOwner } from "./store";
+import { getOwner, getSubscribers, isBroadcastEnabled } from "./store";
 import { telegramApi } from "./telegram";
 import type { Env } from "./types";
+
+/**
+ * Owner har doim eslatma oladi. Agar admin panelda "hammaga yuborish" yoqilgan bo'lsa,
+ * botga /start bosgan har bir obunachiga ham xuddi shu xabar yuboriladi (owner'ga ikki
+ * marta ketmasligi uchun ro'yxatdan chetlab o'tiladi). Bitta obunachiga yubora olmaslik
+ * (masalan, botni bloklagan bo'lsa) qolganlarga to'sqinlik qilmaydi - sendMessage o'zi
+ * xatoni ushlab, false qaytaradi, xolos. Qaytariladigan qiymat - owner'ga yuborilgan-
+ * yubormaganligi (shu asosda "reminded"/qayta urinish holati aniqlanadi).
+ */
+async function notifyOwnerAndSubscribers(
+  env: Env,
+  tg: ReturnType<typeof telegramApi>,
+  ownerId: number,
+  text: string,
+): Promise<boolean> {
+  const ownerSent = await tg.sendMessage(ownerId, text);
+  if (await isBroadcastEnabled(env)) {
+    const subscribers = await getSubscribers(env);
+    for (const id of subscribers) {
+      if (id === ownerId) continue;
+      await tg.sendMessage(id, text);
+    }
+  }
+  return ownerSent;
+}
 
 interface AnnouncementInfo {
   url: string | null;
@@ -258,7 +283,9 @@ async function pollForNewAnnouncements(env: Env): Promise<void> {
       if (!eventInfo) {
         // Sana aniqlanmasa 1 kun oldin eslatib bo'lmaydi - imkoniyatni boy bermaslik uchun
         // shu holatda darhol xabar beramiz.
-        await tg.sendMessage(
+        await notifyOwnerAndSubscribers(
+          env,
+          tg,
           ownerId,
           `📢 Yangi ZOOM e'lon (aniq sanasini avtomatik topib bo'lmadi):\n\n${card.title}\n📅 E'lon joylangan sana: ${card.date}\n🔗 ${card.url}`,
         );
@@ -310,7 +337,9 @@ async function sendDueReminders(env: Env): Promise<void> {
       // Faqat xabar HAQIQATAN yuborilgan bo'lsagina "reminded" deb belgilaymiz - aks holda
       // (masalan, egasi botni hali /start qilmagan bo'lsa) eslatma umuman yetib bormay,
       // lekin abadiy "yuborilgan" deb qayd etilib qolishi mumkin edi.
-      const sent = await tg.sendMessage(
+      const sent = await notifyOwnerAndSubscribers(
+        env,
+        tg,
         ownerId,
         `⏰ Eslatma: ${label} (${ev.isoDate}) ${ev.timeText} ZOOM orqali bo'lib o'tadi:\n\n${ev.title}\n🔗 ${ev.url}`,
       );
