@@ -1,0 +1,28 @@
+name = "zoom-elon-bot"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+[[kv_namespaces]]
+binding = "BOT_KV"
+id = "348ca64181424ce6a4c7e07b1950f152"
+
+[ai]
+binding = "AI"
+
+# Har soatda ishga tushadi (checkAnnouncements) - saytdagi yangi e'lonni tekshirib turadi.
+[triggers]
+crons = ["0 * * * *"]
+
+[vars]
+# TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, ADMIN_IDS, OWNER_ID bu yerda emas - ular
+# maxfiy (wrangler secret put orqali qo'yiladi), chunki bu fayl ochiq (public) GitHub
+# repositoriyasida saqlanadi.
+WORKERS_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+APP_BASE_URL = "https://zoom-elon-bot.bek8896ok.workers.dev"
+ANNOUNCEMENTS_URL = "https://uzswlu.uz/yangiliklar?tab=3&q="
+
+# Maxfiy qiymatlar (wrangler secret put orqali qo'yiladi, bu faylga yozilmaydi):
+#   TELEGRAM_BOT_TOKEN
+#   TELEGRAM_WEBHOOK_SECRET
+#   ADMIN_IDS
+#   OWNER_ID
