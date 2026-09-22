@@ -1,26 +1,50 @@
-import { getOwner, getSubscribers, isBroadcastEnabled } from "./store";
+import { getAdmins, getOwner, getSubscribers, isBroadcastEnabled } from "./store";
 import { telegramApi } from "./telegram";
 import type { Env } from "./types";
 
+export interface PendingEvent {
+  url: string;
+  title: string;
+  isoDate: string;
+  timeText: string;
+  reminded: boolean;
+}
+
 /**
- * Owner har doim eslatma oladi. Agar admin panelda "hammaga yuborish" yoqilgan bo'lsa,
- * botga /start bosgan har bir obunachiga ham xuddi shu xabar yuboriladi (owner'ga ikki
- * marta ketmasligi uchun ro'yxatdan chetlab o'tiladi). Bitta obunachiga yubora olmaslik
- * (masalan, botni bloklagan bo'lsa) qolganlarga to'sqinlik qilmaydi - sendMessage o'zi
- * xatoni ushlab, false qaytaradi, xolos. Qaytariladigan qiymat - owner'ga yuborilgan-
- * yubormaganligi (shu asosda "reminded"/qayta urinish holati aniqlanadi).
+ * Har bir admin (asosiy ham, kichik ham) har doim eslatma oladi - bu shart-sharoitsiz.
+ * Qo'shimcha ravishda, agar admin panelda "hammaga yuborish" yoqilgan bo'lsa, botga /start
+ * bosgan har bir obunachiga ham xuddi shu xabar yuboriladi (adminlarga ikki marta ketmasligi
+ * uchun ular ro'yxatdan chetlab o'tiladi). Bitta qabul qiluvchiga yubora olmaslik (masalan,
+ * botni bloklagan bo'lsa) qolganlarga to'sqinlik qilmaydi - sendMessage o'zi xatoni ushlab,
+ * false qaytaradi, xolos. Qaytariladigan qiymat - ASOSIY ADMIN'ga yuborilgan-yubormaganligi
+ * (shu asosda "reminded"/qayta urinish holati aniqlanadi - u har doim mavjud va ishonchli
+ * bo'lgani uchun tayanch nuqta sifatida tanlangan).
  */
-async function notifyOwnerAndSubscribers(
+async function broadcastToAdminsAndSubscribers(
   env: Env,
   tg: ReturnType<typeof telegramApi>,
-  ownerId: number,
   text: string,
 ): Promise<boolean> {
-  const ownerSent = await tg.sendMessage(ownerId, text);
+  const [admins, ownerId] = await Promise.all([getAdmins(env), getOwner(env)]);
+  let ownerSent = false;
+  let ownerReached = false;
+  for (const adminId of admins) {
+    const sent = await tg.sendMessage(adminId, text);
+    if (adminId === ownerId) {
+      ownerSent = sent;
+      ownerReached = true;
+    }
+  }
+  // Egalik boshqa adminga o'tkazilgan bo'lsa ham, admins ro'yxatida egasi doim bo'lishi
+  // kerak (store.ts shuni kafolatlaydi) - lekin xavfsizlik uchun, kutilmagan holatda
+  // baribir alohida yetkazishga urinamiz.
+  if (!ownerReached) ownerSent = await tg.sendMessage(ownerId, text);
+
   if (await isBroadcastEnabled(env)) {
     const subscribers = await getSubscribers(env);
+    const adminSet = new Set(admins);
     for (const id of subscribers) {
-      if (id === ownerId) continue;
+      if (adminSet.has(id)) continue; // adminlarga alohida allaqachon yuborildi
       await tg.sendMessage(id, text);
     }
   }
@@ -192,12 +216,24 @@ function tashkentDateString(offsetDays: number): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-interface PendingEvent {
-  url: string;
-  title: string;
-  isoDate: string;
-  timeText: string;
-  reminded: boolean;
+/** Toshkent vaqti bo'yicha hozirgi soat (0-23). */
+function tashkentHour(): number {
+  return new Date(Date.now() + 5 * 60 * 60 * 1000).getUTCHours();
+}
+
+/** Toshkent vaqti bo'yicha hozirgi daqiqa (0-59). */
+function tashkentMinute(): number {
+  return new Date(Date.now() + 5 * 60 * 60 * 1000).getUTCMinutes();
+}
+
+/** "soat 14:00" kabi erkin matndan {hour, minute} ajratadi - topilmasa null (xavfsiz tomonda qoladi). */
+function parseTimeOfDay(timeText: string): { hour: number; minute: number } | null {
+  const match = timeText.match(/(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  const hour = parseInt(match[1], 10);
+  const minute = parseInt(match[2], 10);
+  if (Number.isNaN(hour) || Number.isNaN(minute) || hour > 23 || minute > 59) return null;
+  return { hour, minute };
 }
 
 const SEEN_KEY = "announcements:seen_urls";
@@ -219,7 +255,7 @@ async function saveSeenUrls(env: Env, urls: string[]): Promise<void> {
   await env.BOT_KV.put(SEEN_KEY, JSON.stringify(capped));
 }
 
-async function getPending(env: Env): Promise<PendingEvent[]> {
+export async function getPending(env: Env): Promise<PendingEvent[]> {
   const raw = await env.BOT_KV.get(PENDING_KEY);
   if (!raw) return [];
   try {
@@ -231,6 +267,37 @@ async function getPending(env: Env): Promise<PendingEvent[]> {
 
 async function savePending(env: Env, list: PendingEvent[]): Promise<void> {
   await env.BOT_KV.put(PENDING_KEY, JSON.stringify(list));
+}
+
+/**
+ * Yangi (yoki eski, farqi yo'q) admin /start bosganda unga "xabarsiz qolmasin" deb ko'rsatiladigan
+ * tadbirlar - bu BUTUN kutilayotgan ro'yxat emas, faqat ikkitasi: (1) ERTAGA bo'ladigan tadbir
+ * (bo'lsa), va (2) BUGUN bo'ladigan tadbir - lekin faqat uning vaqti hali o'tmagan bo'lsa (agar
+ * bugungi tadbir soati allaqachon o'tib ketgan bo'lsa, uni ko'rsatishning hojati yo'q - bu
+ * o'quvchini chalg'itadi, xolos). Vaqtni parse qilib bo'lmasa - xavfsiz tomondan xato qilib,
+ * baribir ko'rsatamiz (yo'qotib qo'yishdan ko'ra ortiqcha ko'rsatish yaxshiroq).
+ */
+export async function getStartCatchUp(env: Env): Promise<PendingEvent[]> {
+  const pending = await getPending(env);
+  const today = tashkentDateString(0);
+  const tomorrow = tashkentDateString(1);
+  const nowHour = tashkentHour();
+  const nowMinute = tashkentMinute();
+
+  return pending.filter((ev) => {
+    if (ev.isoDate === tomorrow) return true;
+    if (ev.isoDate === today) {
+      const t = parseTimeOfDay(ev.timeText);
+      if (!t) return true; // vaqtni bilmaymiz - xavfsiz tomonda, ko'rsatamiz
+      return t.hour > nowHour || (t.hour === nowHour && t.minute > nowMinute);
+    }
+    return false;
+  });
+}
+
+/** Bir tadbirni xabar matniga formatlaydi - /start orqali tezkor xabardor qilishda ham, oddiy eslatmada ham ishlatiladi. */
+export function formatEventLine(ev: PendingEvent): string {
+  return `${ev.title}\n🗓 ${ev.isoDate}, ${ev.timeText}\n🔗 ${ev.url}`;
 }
 
 /**
@@ -255,7 +322,6 @@ async function pollForNewAnnouncements(env: Env): Promise<void> {
 
   const pending = await getPending(env);
   const pendingUrls = new Set(pending.map((p) => p.url));
-  const ownerId = await getOwner(env);
   const tg = telegramApi(env.TELEGRAM_BOT_TOKEN);
 
   for (const card of newCards) {
@@ -283,10 +349,9 @@ async function pollForNewAnnouncements(env: Env): Promise<void> {
       if (!eventInfo) {
         // Sana aniqlanmasa 1 kun oldin eslatib bo'lmaydi - imkoniyatni boy bermaslik uchun
         // shu holatda darhol xabar beramiz.
-        await notifyOwnerAndSubscribers(
+        await broadcastToAdminsAndSubscribers(
           env,
           tg,
-          ownerId,
           `📢 Yangi ZOOM e'lon (aniq sanasini avtomatik topib bo'lmadi):\n\n${card.title}\n📅 E'lon joylangan sana: ${card.date}\n🔗 ${card.url}`,
         );
         continue;
@@ -306,8 +371,11 @@ async function pollForNewAnnouncements(env: Env): Promise<void> {
 }
 
 /**
- * Kutilayotgan tadbirlarni ko'rib chiqadi - tadbir sanasi ertaga (yoki, agar e'lon o'sha
- * kuniyoq joylangan bo'lsa, bugun) bo'lsa Toshkent vaqti bo'yicha eslatma yuboradi.
+ * Kutilayotgan tadbirlarni ko'rib chiqadi. Tadbir ERTAGA bo'ladigan bo'lsa, aynan soat
+ * 17:00da (Toshkent vaqti) eslatma yuboriladi - yarim kechada emas. (17:00 aniq soati
+ * o'tkazib yuborilsa - masalan worker vaqtincha ishlamay qolsa - >=17 shart tufayli keyingi
+ * soatlik tekshiruvlarda baribir ushlab qoladi, mangu unutilib qolmaydi.) Agar e'lon tadbir
+ * kuniyoq joylangan bo'lsa (isoDate === bugun) - kutish vaqt qoldirmaydi, darhol yuboriladi.
  */
 async function sendDueReminders(env: Env): Promise<void> {
   const pending = await getPending(env);
@@ -315,8 +383,8 @@ async function sendDueReminders(env: Env): Promise<void> {
 
   const today = tashkentDateString(0);
   const tomorrow = tashkentDateString(1);
+  const hour = tashkentHour();
 
-  const ownerId = await getOwner(env);
   const tg = telegramApi(env.TELEGRAM_BOT_TOKEN);
 
   let changed = false;
@@ -329,18 +397,17 @@ async function sendDueReminders(env: Env): Promise<void> {
       continue;
     }
 
-    // Odatda "ertaga" (1 kun oldin) eslatiladi; agar e'lon tadbir kuniyoq joylangan bo'lsa
-    // (isoDate === today), keyingi tekshiruvda "ertaga" bosqichi o'tib ketmasligi uchun
-    // shu kuniyoq darhol yuboriladi.
-    if (!ev.reminded && ev.isoDate <= tomorrow) {
-      const label = ev.isoDate === today ? "BUGUN" : "ertaga";
+    const isToday = ev.isoDate === today;
+    const isTomorrowAfter17 = ev.isoDate === tomorrow && hour >= 17;
+
+    if (!ev.reminded && (isToday || isTomorrowAfter17)) {
+      const label = isToday ? "BUGUN" : "ertaga";
       // Faqat xabar HAQIQATAN yuborilgan bo'lsagina "reminded" deb belgilaymiz - aks holda
-      // (masalan, egasi botni hali /start qilmagan bo'lsa) eslatma umuman yetib bormay,
+      // (masalan, admin botni hali /start qilmagan bo'lsa) eslatma umuman yetib bormay,
       // lekin abadiy "yuborilgan" deb qayd etilib qolishi mumkin edi.
-      const sent = await notifyOwnerAndSubscribers(
+      const sent = await broadcastToAdminsAndSubscribers(
         env,
         tg,
-        ownerId,
         `⏰ Eslatma: ${label} (${ev.isoDate}) ${ev.timeText} ZOOM orqali bo'lib o'tadi:\n\n${ev.title}\n🔗 ${ev.url}`,
       );
       if (sent) {
@@ -358,8 +425,8 @@ async function sendDueReminders(env: Env): Promise<void> {
 /**
  * Runs on the Cron Trigger (har soatda). Ikki ish qiladi: (1) saytdagi TO'LIQ ro'yxatni
  * skanerlab, hali ko'rilmagan har bir ZOOM e'lonni "kutilayotgan eslatmalar" ro'yxatiga
- * qo'shadi, (2) shu ro'yxatdagi tadbirlardan qaysi biri ertaga (yoki bugun) bo'lib
- * o'tishini tekshirib, bir marta (reminded flag orqali) eslatma yuboradi.
+ * qo'shadi, (2) shu ro'yxatdagi tadbirlardan qaysi biri ertaga (soat 17:00da) yoki bugun
+ * bo'lib o'tishini tekshirib, bir marta (reminded flag orqali) eslatma yuboradi.
  */
 export async function checkAnnouncements(env: Env): Promise<void> {
   // Ikkalasi bir-biridan mustaqil ishlaydi - biri xato bersa ham ikkinchisi baribir

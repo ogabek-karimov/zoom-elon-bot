@@ -1,4 +1,4 @@
-import { checkAnnouncements } from "./announcements";
+import { checkAnnouncements, formatEventLine, getPending, getStartCatchUp } from "./announcements";
 import { validateInitData } from "./auth";
 import { telegramApi, type InlineKeyboard } from "./telegram";
 import {
@@ -14,26 +14,8 @@ import {
   setBroadcastEnabled,
   transferOwnership,
 } from "./store";
-import type { Env, TelegramCallbackQuery, TelegramMessage, TelegramUpdate, TelegramUser } from "./types";
+import type { Env, TelegramCallbackQuery, TelegramUpdate, TelegramUser } from "./types";
 import { renderAppHtml } from "./webapp";
-
-interface PendingEvent {
-  url: string;
-  title: string;
-  isoDate: string;
-  timeText: string;
-  reminded: boolean;
-}
-
-async function getPendingEvents(env: Env): Promise<PendingEvent[]> {
-  const raw = await env.BOT_KV.get("announcements:pending");
-  if (!raw) return [];
-  try {
-    return JSON.parse(raw) as PendingEvent[];
-  } catch {
-    return [];
-  }
-}
 
 /**
  * Keeps the persistent Menu (☰) button in sync with admin status: only admins get the
@@ -138,7 +120,7 @@ async function buildAppState(env: Env) {
   const [admins, ownerId, pending, broadcastEnabled, subscribers] = await Promise.all([
     getAdmins(env),
     getOwner(env),
-    getPendingEvents(env),
+    getPending(env),
     isBroadcastEnabled(env),
     getSubscribers(env),
   ]);
@@ -262,6 +244,16 @@ async function handleCommand(
           `${WELCOME_TEXT}\n\nBoshqaruv panelini ochish uchun ☰ Menu tugmasini yoki /panel buyrug'ini bosing.`,
           panelKeyboard(`${env.APP_BASE_URL}/app`),
         );
+
+        // Admin (yangi tayinlangan bo'lsa ham) xabarsiz qolmasin - ertaga bo'ladigan tadbir
+        // (bo'lsa) va bugun bo'ladigan, lekin vaqti hali o'tmagan tadbir (bo'lsa) darhol
+        // yuboriladi. Bu odatdagi 17:00dagi eslatmani ALMASHTIRMAYDI - shunchaki hozir
+        // ko'rib qo'yishi uchun qo'shimcha, tezkor xabar.
+        const catchUp = await getStartCatchUp(env);
+        if (catchUp.length > 0) {
+          const lines = catchUp.map(formatEventLine).join("\n\n");
+          await tg.sendMessage(chatId, `📋 Yaqin orada bo'lib o'tadigan ZOOM tadbirlar:\n\n${lines}`);
+        }
       } else {
         await tg.sendMessage(chatId, WELCOME_TEXT);
       }
