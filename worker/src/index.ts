@@ -4,6 +4,7 @@ import { telegramApi, type InlineKeyboard } from "./telegram";
 import {
   addAdmin,
   addSubscriber,
+  getAdminNames,
   getAdmins,
   getOwner,
   getSubscribers,
@@ -11,6 +12,7 @@ import {
   isBroadcastEnabled,
   isOwner,
   removeAdmin,
+  setAdminName,
   setBroadcastEnabled,
   transferOwnership,
 } from "./store";
@@ -117,13 +119,15 @@ async function authenticateApp(
 }
 
 async function buildAppState(env: Env) {
-  const [admins, ownerId, pending, broadcastEnabled, subscribers] = await Promise.all([
+  const [adminIds, ownerId, pending, broadcastEnabled, subscribers, adminNames] = await Promise.all([
     getAdmins(env),
     getOwner(env),
     getPending(env),
     isBroadcastEnabled(env),
     getSubscribers(env),
+    getAdminNames(env),
   ]);
+  const admins = adminIds.map((id) => ({ id, name: adminNames[id] ?? "" }));
   return { admins, ownerId, pending, broadcastEnabled, subscriberCount: subscribers.length };
 }
 
@@ -140,6 +144,8 @@ async function handleApiAction(request: Request, env: Env): Promise<Response> {
   const { userId, body } = auth;
   const action = typeof body.action === "string" ? body.action : "";
   const value = typeof body.value === "string" ? body.value : "";
+  const name = typeof body.name === "string" ? body.name : "";
+  const text = typeof body.text === "string" ? body.text.trim() : "";
 
   switch (action) {
     case "add_admin": {
@@ -148,6 +154,34 @@ async function handleApiAction(request: Request, env: Env): Promise<Response> {
       if (Number.isNaN(targetId)) return new Response("Noto'g'ri ID.", { status: 400 });
       const added = await addAdmin(env, targetId);
       if (added) await syncAdminMenuButton(telegramApi(env.TELEGRAM_BOT_TOKEN), env, targetId, true);
+      if (name.trim()) await setAdminName(env, targetId, name);
+      break;
+    }
+    case "set_admin_name": {
+      if (!(await isOwner(env, userId))) return new Response("Bu amal faqat asosiy admin uchun.", { status: 403 });
+      const targetId = parseInt(value, 10);
+      if (Number.isNaN(targetId)) return new Response("Noto'g'ri ID.", { status: 400 });
+      await setAdminName(env, targetId, name);
+      break;
+    }
+    case "message_admin": {
+      if (!(await isOwner(env, userId))) return new Response("Bu amal faqat asosiy admin uchun.", { status: 403 });
+      const targetId = parseInt(value, 10);
+      if (Number.isNaN(targetId)) return new Response("Noto'g'ri ID.", { status: 400 });
+      if (!(await isAdmin(env, targetId))) return new Response("Bu ID admin emas.", { status: 400 });
+      if (!text) return new Response("Xabar matni bo'sh bo'lmasin.", { status: 400 });
+      const sent = await telegramApi(env.TELEGRAM_BOT_TOKEN).sendMessage(targetId, `✉️ Asosiy admindan xabar:\n\n${text}`);
+      if (!sent) return new Response("Xabar yetkazilmadi - qabul qiluvchi botni hali /start qilmagan bo'lishi mumkin.", { status: 400 });
+      break;
+    }
+    case "broadcast_message": {
+      if (!(await isOwner(env, userId))) return new Response("Bu amal faqat asosiy admin uchun.", { status: 403 });
+      if (!text) return new Response("Xabar matni bo'sh bo'lmasin.", { status: 400 });
+      const tg = telegramApi(env.TELEGRAM_BOT_TOKEN);
+      const subscribers = await getSubscribers(env);
+      for (const id of subscribers) {
+        await tg.sendMessage(id, `📢 E'lon:\n\n${text}`);
+      }
       break;
     }
     case "remove_admin": {
@@ -270,7 +304,11 @@ async function handleCommand(
       if (!(await requireAdmin())) return;
       const admins = await getAdmins(env);
       const ownerId = await getOwner(env);
-      const lines = admins.map((id) => (id === ownerId ? `👑 ${id} (asosiy admin)` : `${id}`));
+      const names = await getAdminNames(env);
+      const lines = admins.map((id) => {
+        const label = names[id] ? `${names[id]} (${id})` : `${id}`;
+        return id === ownerId ? `👑 ${label} - asosiy admin` : label;
+      });
       await tg.sendMessage(chatId, lines.join("\n") || "Adminlar yo'q.");
       return;
     }
@@ -278,12 +316,14 @@ async function handleCommand(
     case "/addadmin": {
       if (!(await requireOwner())) return;
       const targetId = parseInt(args[0], 10);
-      if (args.length !== 1 || Number.isNaN(targetId)) {
-        await tg.sendMessage(chatId, "Foydalanish: /addadmin <Telegram ID>");
+      if (args.length < 1 || Number.isNaN(targetId)) {
+        await tg.sendMessage(chatId, "Foydalanish: /addadmin <Telegram ID> [Ism]");
         return;
       }
+      const adminName = args.slice(1).join(" ");
       const added = await addAdmin(env, targetId);
       if (added) await syncAdminMenuButton(tg, env, targetId, true);
+      if (adminName.trim()) await setAdminName(env, targetId, adminName);
       await tg.sendMessage(chatId, added ? `${targetId} endi admin.` : `${targetId} allaqachon admin edi.`);
       return;
     }

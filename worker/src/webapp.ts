@@ -62,6 +62,13 @@ export function renderAppHtml(): string {
     border: 1px solid var(--tg-theme-hint-color, #cccccc);
     background: var(--tg-theme-bg-color, #ffffff); color: inherit; font-size: 14px;
   }
+  textarea, select {
+    width: 100%; margin-top: 10px; padding: 9px 10px;
+    border-radius: 8px; border: 1px solid var(--tg-theme-hint-color, #cccccc);
+    background: var(--tg-theme-bg-color, #ffffff); color: inherit;
+    font-family: inherit; font-size: 14px;
+  }
+  textarea { min-height: 70px; resize: vertical; }
   #status { text-align: center; margin-top: 40px; color: var(--tg-theme-hint-color, #888); }
 </style>
 </head>
@@ -77,6 +84,7 @@ export function renderAppHtml(): string {
       <div id="adminManageArea">
         <div class="btn-row">
           <input type="text" id="newAdminId" placeholder="Telegram ID" inputmode="numeric" />
+          <input type="text" id="newAdminName" placeholder="Ism" />
           <button id="addAdminBtn">Qo'shish</button>
         </div>
         <div class="hint" style="margin-top:10px">Asosiy adminlik huquqini o'tkazish (avval yuqoridagi ID admin bo'lishi kerak):</div>
@@ -86,6 +94,21 @@ export function renderAppHtml(): string {
         </div>
       </div>
       <div id="adminManageHint" class="hint" hidden>Adminlarni boshqarish va egalikni o'tkazish faqat asosiy admin uchun.</div>
+    </div>
+
+    <div class="card" id="messageAdminCard" hidden>
+      <div class="label">✉️ Kichik adminga xabar yuborish</div>
+      <div class="hint">Tanlangan adminga shaxsiy xabar yuboriladi.</div>
+      <select id="messageAdminSelect"></select>
+      <textarea id="messageAdminText" placeholder="Xabar matni"></textarea>
+      <div class="btn-row"><button id="sendAdminMsgBtn">Yuborish</button></div>
+    </div>
+
+    <div class="card" id="broadcastMsgCard" hidden>
+      <div class="label">📢 Barchaga xabar yuborish</div>
+      <div class="hint">Botga /start bosgan HAMMAGA (obunachilarning barchasiga) shu matn yuboriladi.</div>
+      <textarea id="broadcastMsgText" placeholder="Xabar matni"></textarea>
+      <div class="btn-row"><button id="sendBroadcastMsgBtn">Hammaga yuborish</button></div>
     </div>
 
     <div class="card">
@@ -137,22 +160,72 @@ export function renderAppHtml(): string {
       adminListEl.innerHTML = '<div class="hint">Adminlar yo\\'q</div>';
       return;
     }
-    for (const id of admins) {
+    for (const admin of admins) {
+      const id = admin.id;
       const row = document.createElement("div");
       row.className = "admin-item";
-      const span = document.createElement("span");
-      span.textContent = (id === ownerId ? "👑 " : "") + id + (id === ownerId ? " (asosiy admin)" : "");
-      row.appendChild(span);
-      if (isOwnerMe && id !== ownerId) {
-        const btn = document.createElement("button");
-        btn.className = "danger";
-        btn.textContent = "O'chirish";
-        btn.style.padding = "6px 10px";
-        btn.style.fontSize = "12px";
-        btn.onclick = () => removeAdmin(id);
-        row.appendChild(btn);
+      row.style.flexWrap = "wrap";
+      row.style.gap = "6px";
+
+      const info = document.createElement("div");
+      info.style.flex = "1";
+      info.style.minWidth = "120px";
+      const label = (admin.name ? admin.name + " (" + id + ")" : String(id)) + (id === ownerId ? " - asosiy admin" : "");
+      info.textContent = (id === ownerId ? "👑 " : "") + label;
+      row.appendChild(info);
+
+      if (isOwnerMe) {
+        const actions = document.createElement("div");
+        actions.style.display = "flex";
+        actions.style.gap = "6px";
+
+        const nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.placeholder = "Ism";
+        nameInput.value = admin.name || "";
+        nameInput.style.width = "90px";
+        nameInput.style.flex = "none";
+        actions.appendChild(nameInput);
+
+        const saveBtn = document.createElement("button");
+        saveBtn.textContent = "💾";
+        saveBtn.style.padding = "6px 10px";
+        saveBtn.style.fontSize = "12px";
+        saveBtn.onclick = () => saveAdminName(id, nameInput.value);
+        actions.appendChild(saveBtn);
+
+        if (id !== ownerId) {
+          const btn = document.createElement("button");
+          btn.className = "danger";
+          btn.textContent = "O'chirish";
+          btn.style.padding = "6px 10px";
+          btn.style.fontSize = "12px";
+          btn.onclick = () => removeAdmin(id);
+          actions.appendChild(btn);
+        }
+        row.appendChild(actions);
       }
+
       adminListEl.appendChild(row);
+    }
+  }
+
+  function renderAdminSelect(admins, ownerId) {
+    const sel = document.getElementById("messageAdminSelect");
+    sel.innerHTML = "";
+    const targets = admins.filter((a) => a.id !== ownerId);
+    if (targets.length === 0) {
+      const opt = document.createElement("option");
+      opt.textContent = "Kichik admin yo'q";
+      opt.disabled = true;
+      sel.appendChild(opt);
+      return;
+    }
+    for (const a of targets) {
+      const opt = document.createElement("option");
+      opt.value = a.id;
+      opt.textContent = a.name ? a.name + " (" + a.id + ")" : String(a.id);
+      sel.appendChild(opt);
     }
   }
 
@@ -185,8 +258,11 @@ export function renderAppHtml(): string {
     const myId = tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : null;
     const isOwnerMe = myId === state.ownerId;
     renderAdmins(state.admins, state.ownerId, isOwnerMe);
+    renderAdminSelect(state.admins, state.ownerId);
     document.getElementById("adminManageArea").hidden = !isOwnerMe;
     document.getElementById("adminManageHint").hidden = isOwnerMe;
+    document.getElementById("messageAdminCard").hidden = !isOwnerMe;
+    document.getElementById("broadcastMsgCard").hidden = !isOwnerMe;
     document.getElementById("broadcastToggle").checked = state.broadcastEnabled;
     document.getElementById("subscriberCount").textContent = state.subscriberCount;
     renderEvents(state.pending);
@@ -216,15 +292,64 @@ export function renderAppHtml(): string {
 
   document.getElementById("addAdminBtn").addEventListener("click", async () => {
     const input = document.getElementById("newAdminId");
+    const nameInput = document.getElementById("newAdminName");
     const id = input.value.trim();
     if (!id) return;
     try {
-      const state = await api("/api/action", { action: "add_admin", value: id });
+      const state = await api("/api/action", { action: "add_admin", value: id, name: nameInput.value.trim() });
       render(state);
       input.value = "";
+      nameInput.value = "";
     } catch (e) {
       tg.showAlert("Xatolik: " + e.message);
     }
+  });
+
+  async function saveAdminName(id, name) {
+    try {
+      const state = await api("/api/action", { action: "set_admin_name", value: String(id), name });
+      render(state);
+      tg.HapticFeedback.notificationOccurred("success");
+    } catch (e) {
+      tg.showAlert("Xatolik: " + e.message);
+    }
+  }
+
+  document.getElementById("sendAdminMsgBtn").addEventListener("click", async () => {
+    const sel = document.getElementById("messageAdminSelect");
+    const textEl = document.getElementById("messageAdminText");
+    const targetId = sel.value;
+    const msg = textEl.value.trim();
+    if (!targetId || !msg) {
+      tg.showAlert("Adminni tanlang va xabar matnini kiriting.");
+      return;
+    }
+    try {
+      await api("/api/action", { action: "message_admin", value: targetId, text: msg });
+      textEl.value = "";
+      tg.showAlert("Xabar yuborildi.");
+    } catch (e) {
+      tg.showAlert("Xatolik: " + e.message);
+    }
+  });
+
+  document.getElementById("sendBroadcastMsgBtn").addEventListener("click", () => {
+    const textEl = document.getElementById("broadcastMsgText");
+    const msg = textEl.value.trim();
+    if (!msg) {
+      tg.showAlert("Xabar matnini kiriting.");
+      return;
+    }
+    tg.showConfirm("Bu xabar botdan foydalanayotgan HAMMAGA yuboriladi. Davom etasizmi?", async (ok) => {
+      if (!ok) return;
+      try {
+        await api("/api/action", { action: "broadcast_message", text: msg });
+        textEl.value = "";
+        tg.showAlert("Xabar yuborildi.");
+      } catch (e) {
+        tg.showAlert("Xatolik: " + e.message);
+      }
+    });
   });
 
   document.getElementById("transferOwnerBtn").addEventListener("click", async () => {

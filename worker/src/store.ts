@@ -2,6 +2,7 @@ import type { Env } from "./types";
 
 const ADMINS_KEY = "admins";
 const OWNER_KEY = "owner";
+const ADMIN_NAMES_KEY = "admin_names";
 const SUBSCRIBERS_KEY = "subscribers";
 const SUBSCRIBER_CAP = 5000; // cheksiz o'smasin - eng eskilari chetlanadi
 const BROADCAST_ENABLED_KEY = "broadcast_enabled";
@@ -48,6 +49,31 @@ export async function removeAdmin(env: Env, userId: number): Promise<boolean> {
   const next = admins.filter((id) => id !== userId);
   await env.BOT_KV.put(ADMINS_KEY, JSON.stringify(next));
   return true;
+}
+
+/**
+ * Admin ID -> ism xaritasi (adminlar ro'yxatidan mustaqil saqlanadi, shunda avval ismsiz
+ * qo'shilgan adminlarga ham keyinroq ism yozib qo'yish mumkin - "admins" ro'yxatini qayta
+ * shakllantirishga hojat yo'q).
+ */
+export async function getAdminNames(env: Env): Promise<Record<number, string>> {
+  const raw = await env.BOT_KV.get(ADMIN_NAMES_KEY);
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw) as Record<number, string>;
+  } catch {
+    return {};
+  }
+}
+
+export async function setAdminName(env: Env, userId: number, name: string): Promise<void> {
+  const names = await getAdminNames(env);
+  if (name.trim()) {
+    names[userId] = name.trim();
+  } else {
+    delete names[userId];
+  }
+  await env.BOT_KV.put(ADMIN_NAMES_KEY, JSON.stringify(names));
 }
 
 /** Reads the current owner (asosiy admin), seeding it from OWNER_ID on first use. */
