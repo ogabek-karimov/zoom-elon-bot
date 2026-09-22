@@ -115,7 +115,7 @@ export function renderAppHtml(): string {
       <div class="row">
         <div>
           <div class="label">📣 Hammaga yuborish</div>
-          <div class="hint">Yoqilsa, botga /start bosgan HAR BIR foydalanuvchi ham ZOOM eslatmalarini oladi. O'chirilsa, eslatma faqat asosiy adminga (sizga) keladi.</div>
+          <div class="hint">ZOOM eslatmalari asosiy admin va barcha kichik adminlarga har doim, holatidan qat'iy nazar boradi. Bu tugma YOQILSA, qo'shimcha ravishda botga /start bosgan boshqa HAR BIR foydalanuvchiga ham (admin bo'lmasa ham) boradi. O'CHIRILSA, faqat adminlarga boradi.</div>
         </div>
         <label class="switch">
           <input type="checkbox" id="broadcastToggle" />
