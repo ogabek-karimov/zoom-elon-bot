@@ -205,6 +205,23 @@ function mentionedMonth(articleText: string): number | null {
   return null;
 }
 
+/**
+ * Matnning boshidagi "soat N:MM" iborasini oddiy regex orqali (AI'siz) to'g'ridan-to'g'ri
+ * o'qiydi. Sayt HTML'ida sana va soat orasida ko'pincha &nbsp; (maxsus bo'shliq belgisi)
+ * ishlatiladi - masalan "soat 9&nbsp;:00" - bu AI'ni chalg'itib, vaqtni butunlay boshqacha
+ * (masalan "10:00") deb o'qishiga sabab bo'lgani jonli holatda aniqlangan. \s JavaScript'da
+ *  'ni ham o'z ichiga oladi, shuning uchun bu bo'shliqlardan qat'iy nazar to'g'ri ishlaydi.
+ */
+function mentionedTime(articleText: string): { hour: number; minute: number } | null {
+  const prefix = articleText.slice(0, 300);
+  const match = prefix.match(/soat\s*(\d{1,2})\s*[:.]\s*(\d{2})/i);
+  if (!match) return null;
+  const hour = parseInt(match[1], 10);
+  const minute = parseInt(match[2], 10);
+  if (Number.isNaN(hour) || Number.isNaN(minute) || hour > 23 || minute > 59) return null;
+  return { hour, minute };
+}
+
 async function extractEventDateInfoOnce(env: Env, articleText: string): Promise<EventDateInfo | null> {
   try {
     const systemPrompt =
@@ -253,9 +270,16 @@ async function extractEventDateInfoOnce(env: Env, articleText: string): Promise<
  * solishtiramiz - mos kelmasa, bu AI xatosi deb hisoblanadi va qayta so'raladi (eng ko'p
  * 3 marta), hammasi muvaffaqiyatsiz bo'lsa - null (keyingi soatlik tekshiruvda qayta
  * urinib ko'riladi, xato ma'lumot hech qachon saqlanmaydi).
+ *
+ * Xuddi shunday, vaqt (soat) uchun ham AI'ga ishonmaymiz - jonli holatda "soat 9:00" matnli
+ * tadbir AI tomonidan "soat 10:00" deb noto'g'ri o'qilgani aniqlangan (sababi - sahifadagi
+ * &nbsp; belgisi). Matndan regex orqali aniq topilgan vaqt bo'lsa, u har doim AI natijasidan
+ * USTUN qo'yiladi - qayta so'rashga ham hojat yo'q, chunki bu oddiy matn izlash hech qachon
+ * "noto'g'ri tushunib" xato qilmaydi.
  */
 async function extractEventDateInfo(env: Env, articleText: string): Promise<EventDateInfo | null> {
   const expectedMonth = mentionedMonth(articleText);
+  const exactTime = mentionedTime(articleText);
 
   for (let attempt = 0; attempt < 3; attempt++) {
     const info = await extractEventDateInfoOnce(env, articleText);
@@ -265,6 +289,12 @@ async function extractEventDateInfo(env: Env, articleText: string): Promise<Even
     if (expectedMonth !== null && expectedMonth !== extractedMonth) {
       console.error("Month mismatch in AI date extraction, retrying", info.isoDate, "expected month", expectedMonth);
       continue;
+    }
+
+    if (exactTime) {
+      const hh = String(exactTime.hour).padStart(2, "0");
+      const mm = String(exactTime.minute).padStart(2, "0");
+      return { isoDate: info.isoDate, timeText: `soat ${hh}:${mm}` };
     }
 
     return info;
