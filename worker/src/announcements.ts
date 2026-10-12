@@ -165,15 +165,24 @@ interface EventDateInfo {
   timeText: string; // odam o'qiydigan qism, masalan "soat 12:00"
 }
 
+const UZBEK_MONTHS: Record<string, number> = {
+  yanvar: 1, fevral: 2, mart: 3, aprel: 4, may: 5, iyun: 6, iyul: 7,
+  avgust: 8, sentabr: 9, sentyabr: 9, oktabr: 10, oktyabr: 10, noyabr: 11, dekabr: 12,
+};
+
 /**
- * Meaning-based (not regex-pattern) extraction of the event's actual date/time from the
- * announcement's own body text - the listing page's "date" is just the publish date, not
- * when the defense/seminar happens. Qat'iy "YYYY-MM-DD | soat HH:MM" formatda so'raladi,
- * shunda isoDate ustida taqvim hisob-kitobi (ertaga - bugun) ishonchli ishlaydi. Same
- * reliable pattern as the other AI classifiers in this project (temperature 0, fails to
- * null on any error or format mismatch).
+ * Matnning boshida (sana odatda shu yerda keladi) qaysi oy nomi tilga olinganini topadi -
+ * AI qaytargan isoDate'ni shunga qarshi tekshirish uchun (quyida ko'ring).
  */
-async function extractEventDateInfo(env: Env, articleText: string): Promise<EventDateInfo | null> {
+function mentionedMonth(articleText: string): number | null {
+  const prefix = articleText.slice(0, 300).toLowerCase();
+  for (const [name, num] of Object.entries(UZBEK_MONTHS)) {
+    if (prefix.includes(name)) return num;
+  }
+  return null;
+}
+
+async function extractEventDateInfoOnce(env: Env, articleText: string): Promise<EventDateInfo | null> {
   try {
     const systemPrompt =
       "Quyidagi e'lon matnidan tadbir (himoya/seminar/konferensiya) o'tkaziladigan ANIQ sana va soatni toping. " +
@@ -204,6 +213,41 @@ async function extractEventDateInfo(env: Env, articleText: string): Promise<Even
     console.error("Event date extraction failed", error);
     return null;
   }
+}
+
+/**
+ * Meaning-based (not regex-pattern) extraction of the event's actual date/time from the
+ * announcement's own body text - the listing page's "date" is just the publish date, not
+ * when the defense/seminar happens. Qat'iy "YYYY-MM-DD | soat HH:MM" formatda so'raladi,
+ * shunda isoDate ustida taqvim hisob-kitobi (ertaga - bugun) ishonchli ishlaydi.
+ *
+ * Jonli tekshirishda aniqlangan haqiqiy nosozlik: AI (bepul, tez model) ba'zan OYNI noto'g'ri
+ * o'qiydi - masalan "12-oktyabr" matnini "2026-12-12" (dekabr!) yoki hatto soatni ham xato
+ * ("16:00" o'rniga "10:00") deb qaytargan, aynan shu holda qayta so'ralganda esa darhol
+ * to'g'ri javob bergan - ya'ni bu formatga mos, lekin MAZMUNAN xato natija, oddiy "NOANIQ"
+ * tekshiruvi buni ushlab ololmaydi. Shuning uchun qo'shimcha himoya: matn boshida tilga
+ * olingan oy nomini (masalan "oktyabr") aniqlab, AI qaytargan isoDate'dagi oy bilan
+ * solishtiramiz - mos kelmasa, bu AI xatosi deb hisoblanadi va qayta so'raladi (eng ko'p
+ * 3 marta), hammasi muvaffaqiyatsiz bo'lsa - null (keyingi soatlik tekshiruvda qayta
+ * urinib ko'riladi, xato ma'lumot hech qachon saqlanmaydi).
+ */
+async function extractEventDateInfo(env: Env, articleText: string): Promise<EventDateInfo | null> {
+  const expectedMonth = mentionedMonth(articleText);
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const info = await extractEventDateInfoOnce(env, articleText);
+    if (!info) continue; // AI "NOANIQ" dedi yoki format mos kelmadi - qayta urinamiz
+
+    const extractedMonth = parseInt(info.isoDate.slice(5, 7), 10);
+    if (expectedMonth !== null && expectedMonth !== extractedMonth) {
+      console.error("Month mismatch in AI date extraction, retrying", info.isoDate, "expected month", expectedMonth);
+      continue;
+    }
+
+    return info;
+  }
+
+  return null;
 }
 
 /** Toshkent vaqti (UTC+5, yozgi vaqtga o'tish yo'q) bo'yicha YYYY-MM-DD, offsetDays kun qo'shib/ayirib. */
@@ -371,6 +415,55 @@ async function pollForNewAnnouncements(env: Env): Promise<void> {
 }
 
 /**
+ * Kutilayotgan tadbirlardan qaysi biri saytdan o'chirilgan (bekor qilingan/orqaga olingan)
+ * bo'lsa, "kutilayotgan eslatmalar" ro'yxatidan olib tashlaydi - aks holda bot allaqachon
+ * o'chirilgan tadbir haqida ham (hali to'g'ri bo'lgan paytda yozib olingani uchun) eslatma
+ * yuborib yuboraveradi. Har bir e'lon sahifasi hali mavjudmi - shunchaki HEAD so'rov bilan
+ * tekshiriladi (engil, maqola matnini yuklab olish shart emas). Faqat ANIQ 404 holatida olib
+ * tashlaymiz - tarmoq xatosi yoki boshqa vaqtinchalik muammo bo'lsa, xavfsizlik uchun
+ * ro'yxatda qoldiramiz (bitta vaqtinchalik uzilish sababli haqiqiy tadbirni yo'qotib
+ * qo'yish mumkin emas). Agar o'chirilgan tadbir haqida allaqachon eslatma yuborilgan bo'lsa
+ * (reminded: true), buni ham xabar qilamiz - aks holda odamlar eski, endi noto'g'ri
+ * ma'lumotga ishonib qolaveradi.
+ */
+async function pruneDeletedEvents(env: Env): Promise<void> {
+  const pending = await getPending(env);
+  if (pending.length === 0) return;
+
+  const tg = telegramApi(env.TELEGRAM_BOT_TOKEN);
+  const remaining: PendingEvent[] = [];
+  let changed = false;
+
+  for (const ev of pending) {
+    try {
+      const res = await fetch(ev.url, {
+        method: "HEAD",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; ZoomElonBot/1.0; +https://zoom-elon-bot.bek8896ok.workers.dev)",
+        },
+      });
+      if (res.status === 404) {
+        changed = true;
+        if (ev.reminded) {
+          await broadcastToAdminsAndSubscribers(
+            env,
+            tg,
+            `❌ E'lon bekor qilindi yoki saytdan olib tashlandi (ilgari eslatma yuborilgan edi):\n\n${ev.title}\n🗓 ${ev.isoDate}, ${ev.timeText}`,
+          );
+        }
+        continue; // ro'yxatdan olib tashlanadi
+      }
+    } catch (error) {
+      console.error("pruneDeletedEvents: failed to check", ev.url, error);
+      // Tarmoq xatosi - xavfsiz tomonda qolib, ro'yxatda saqlaymiz (keyingi safar qayta tekshiriladi).
+    }
+    remaining.push(ev);
+  }
+
+  if (changed) await savePending(env, remaining);
+}
+
+/**
  * Kutilayotgan tadbirlarni ko'rib chiqadi. Tadbir ERTAGA bo'ladigan bo'lsa, aynan soat
  * 17:00da (Toshkent vaqti) eslatma yuboriladi - yarim kechada emas. (17:00 aniq soati
  * o'tkazib yuborilsa - masalan worker vaqtincha ishlamay qolsa - >=17 shart tufayli keyingi
@@ -429,12 +522,19 @@ async function sendDueReminders(env: Env): Promise<void> {
  * bo'lib o'tishini tekshirib, bir marta (reminded flag orqali) eslatma yuboradi.
  */
 export async function checkAnnouncements(env: Env): Promise<void> {
-  // Ikkalasi bir-biridan mustaqil ishlaydi - biri xato bersa ham ikkinchisi baribir
+  // Uchalasi ham bir-biridan mustaqil ishlaydi - biri xato bersa ham qolganlari baribir
   // ishlashi kerak (masalan, saytga ulanib bo'lmasa ham, mavjud eslatmalar yuborilaversin).
+  // Tartib muhim: pruneDeletedEvents sendDueReminders'dan OLDIN ishlaydi - shunda bir xil
+  // tekshiruvda o'chirilgan e'lon haqida eslatma yuborib yuborish mumkin emas.
   try {
     await pollForNewAnnouncements(env);
   } catch (error) {
     console.error("pollForNewAnnouncements failed", error);
+  }
+  try {
+    await pruneDeletedEvents(env);
+  } catch (error) {
+    console.error("pruneDeletedEvents failed", error);
   }
   try {
     await sendDueReminders(env);
