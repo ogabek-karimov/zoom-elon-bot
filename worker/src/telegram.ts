@@ -15,9 +15,11 @@ export function telegramApi(token: string) {
   const base = `${API_BASE}${token}`;
 
   return {
-    // Returns whether the send actually succeeded - callers that must not mark something
-    // as "done" (e.g. a one-time reminder) unless the message truly went out rely on this.
-    async sendMessage(chatId: number, text: string, replyMarkup?: InlineKeyboard): Promise<boolean> {
+    // Returns the sent message's id on success, null on failure - callers that must not mark
+    // something as "done" (e.g. a one-time reminder) unless the message truly went out rely
+    // on the null check; the id itself lets a later caller delete that exact message (e.g.
+    // when the announcement it was about gets retracted - see pruneDeletedEvents).
+    async sendMessage(chatId: number, text: string, replyMarkup?: InlineKeyboard): Promise<number | null> {
       const res = await fetch(`${base}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -25,6 +27,25 @@ export function telegramApi(token: string) {
       });
       if (!res.ok) {
         console.error("sendMessage failed", res.status, await res.text());
+        return null;
+      }
+      const data = (await res.json()) as { result?: { message_id?: number } };
+      return data.result?.message_id ?? null;
+    },
+
+    /**
+     * Returns whether the delete actually succeeded. Telegram only allows deleting a
+     * message within 48h of sending it (see callers for the text-notice fallback when
+     * that window has passed, or the chat/message is otherwise gone).
+     */
+    async deleteMessage(chatId: number, messageId: number): Promise<boolean> {
+      const res = await fetch(`${base}/deleteMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
+      });
+      if (!res.ok) {
+        console.error("deleteMessage failed", res.status, await res.text());
         return false;
       }
       return true;

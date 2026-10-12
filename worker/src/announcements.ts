@@ -2,12 +2,25 @@ import { getAdmins, getOwner, getSubscribers, isBroadcastEnabled } from "./store
 import { telegramApi } from "./telegram";
 import type { Env } from "./types";
 
+/** Bitta chatga yuborilgan bitta xabarning manzili - keyinroq o'sha ANIQ xabarni o'chirish uchun kerak bo'ladi. */
+export interface SentMessageRef {
+  chatId: number;
+  messageId: number;
+}
+
 export interface PendingEvent {
   url: string;
   title: string;
   isoDate: string;
   timeText: string;
   reminded: boolean;
+  /** Eslatma yuborilgan bo'lsa, u aynan qaysi chatlarga (va qaysi xabar ID bilan) ketgani - e'lon saytdan o'chirilsa, shu xabarlarni o'chirish uchun. */
+  sentTo?: SentMessageRef[];
+}
+
+interface BroadcastResult {
+  ownerSent: boolean;
+  sentTo: SentMessageRef[];
 }
 
 /**
@@ -16,39 +29,48 @@ export interface PendingEvent {
  * bosgan har bir obunachiga ham xuddi shu xabar yuboriladi (adminlarga ikki marta ketmasligi
  * uchun ular ro'yxatdan chetlab o'tiladi). Bitta qabul qiluvchiga yubora olmaslik (masalan,
  * botni bloklagan bo'lsa) qolganlarga to'sqinlik qilmaydi - sendMessage o'zi xatoni ushlab,
- * false qaytaradi, xolos. Qaytariladigan qiymat - ASOSIY ADMIN'ga yuborilgan-yubormaganligi
- * (shu asosda "reminded"/qayta urinish holati aniqlanadi - u har doim mavjud va ishonchli
- * bo'lgani uchun tayanch nuqta sifatida tanlangan).
+ * null qaytaradi, xolos. `sentTo` - muvaffaqiyatli yetgan har bir xabarning chat+ID manzili
+ * (e'lon keyinroq saytdan o'chirilsa, shu aniq xabarlarni o'chirish uchun kerak bo'ladi).
+ * `ownerSent` - ASOSIY ADMIN'ga yuborilgan-yubormaganligi (shu asosda "reminded"/qayta
+ * urinish holati aniqlanadi - u har doim mavjud va ishonchli bo'lgani uchun tanlangan).
  */
 async function broadcastToAdminsAndSubscribers(
   env: Env,
   tg: ReturnType<typeof telegramApi>,
   text: string,
-): Promise<boolean> {
+): Promise<BroadcastResult> {
   const [admins, ownerId] = await Promise.all([getAdmins(env), getOwner(env)]);
   let ownerSent = false;
   let ownerReached = false;
+  const sentTo: SentMessageRef[] = [];
+
   for (const adminId of admins) {
-    const sent = await tg.sendMessage(adminId, text);
+    const messageId = await tg.sendMessage(adminId, text);
+    if (messageId !== null) sentTo.push({ chatId: adminId, messageId });
     if (adminId === ownerId) {
-      ownerSent = sent;
+      ownerSent = messageId !== null;
       ownerReached = true;
     }
   }
   // Egalik boshqa adminga o'tkazilgan bo'lsa ham, admins ro'yxatida egasi doim bo'lishi
   // kerak (store.ts shuni kafolatlaydi) - lekin xavfsizlik uchun, kutilmagan holatda
   // baribir alohida yetkazishga urinamiz.
-  if (!ownerReached) ownerSent = await tg.sendMessage(ownerId, text);
+  if (!ownerReached) {
+    const messageId = await tg.sendMessage(ownerId, text);
+    ownerSent = messageId !== null;
+    if (messageId !== null) sentTo.push({ chatId: ownerId, messageId });
+  }
 
   if (await isBroadcastEnabled(env)) {
     const subscribers = await getSubscribers(env);
     const adminSet = new Set(admins);
     for (const id of subscribers) {
       if (adminSet.has(id)) continue; // adminlarga alohida allaqachon yuborildi
-      await tg.sendMessage(id, text);
+      const messageId = await tg.sendMessage(id, text);
+      if (messageId !== null) sentTo.push({ chatId: id, messageId });
     }
   }
-  return ownerSent;
+  return { ownerSent, sentTo };
 }
 
 interface AnnouncementInfo {
@@ -422,9 +444,16 @@ async function pollForNewAnnouncements(env: Env): Promise<void> {
  * tekshiriladi (engil, maqola matnini yuklab olish shart emas). Faqat ANIQ 404 holatida olib
  * tashlaymiz - tarmoq xatosi yoki boshqa vaqtinchalik muammo bo'lsa, xavfsizlik uchun
  * ro'yxatda qoldiramiz (bitta vaqtinchalik uzilish sababli haqiqiy tadbirni yo'qotib
- * qo'yish mumkin emas). Agar o'chirilgan tadbir haqida allaqachon eslatma yuborilgan bo'lsa
- * (reminded: true), buni ham xabar qilamiz - aks holda odamlar eski, endi noto'g'ri
- * ma'lumotga ishonib qolaveradi.
+ * qo'yish mumkin emas).
+ *
+ * Agar o'chirilgan tadbir haqida allaqachon eslatma yuborilgan bo'lsa (reminded: true),
+ * qo'shimcha "bekor qilindi" xabari yuborish o'rniga - o'sha ESLATMANING O'ZINI har bir
+ * qabul qiluvchining chatidan o'chirib tashlaymiz (Telegram buni sentTo'da saqlangan har
+ * bir chat+xabar ID orqali imkon beradi). Shunda foydalanuvchi "qaysi e'lon bekor qilindi"
+ * deb o'ylab o'tirmaydi - eslatmaning o'zi ko'rinmay qoladi. Telegram xabarni faqat 48
+ * soatgacha o'chirishga ruxsat beradi; shu muddatdan o'tib ketgan yoki sentTo umuman
+ * saqlanmagan (eski, bu funksiya qo'shilishidan oldingi) holatlarda - FAQAT o'sha bitta
+ * chatga matn orqali tuzatish xabari yuboriladi (qolganlariga tegmaydi).
  */
 async function pruneDeletedEvents(env: Env): Promise<void> {
   const pending = await getPending(env);
@@ -444,7 +473,21 @@ async function pruneDeletedEvents(env: Env): Promise<void> {
       });
       if (res.status === 404) {
         changed = true;
-        if (ev.reminded) {
+        if (ev.reminded && ev.sentTo && ev.sentTo.length > 0) {
+          for (const ref of ev.sentTo) {
+            const deleted = await tg.deleteMessage(ref.chatId, ref.messageId);
+            if (!deleted) {
+              // O'chirib bo'lmadi (48 soatdan o'tgan yoki boshqa sabab) - shu bitta
+              // odamga tuzatish xabarini matn orqali yuboramiz, aks holda eski
+              // ma'lumotga ishonib qolaveradi.
+              await tg.sendMessage(
+                ref.chatId,
+                `❌ E'lon bekor qilindi yoki saytdan olib tashlandi:\n\n${ev.title}\n🗓 ${ev.isoDate}, ${ev.timeText}`,
+              );
+            }
+          }
+        } else if (ev.reminded) {
+          // Eski yozuv - qayerga yuborilgani saqlanmagan, aniq kimga yuborishni bilmaymiz.
           await broadcastToAdminsAndSubscribers(
             env,
             tg,
@@ -498,13 +541,14 @@ async function sendDueReminders(env: Env): Promise<void> {
       // Faqat xabar HAQIQATAN yuborilgan bo'lsagina "reminded" deb belgilaymiz - aks holda
       // (masalan, admin botni hali /start qilmagan bo'lsa) eslatma umuman yetib bormay,
       // lekin abadiy "yuborilgan" deb qayd etilib qolishi mumkin edi.
-      const sent = await broadcastToAdminsAndSubscribers(
+      const result = await broadcastToAdminsAndSubscribers(
         env,
         tg,
         `⏰ Eslatma: ${label} (${ev.isoDate}) ${ev.timeText} ZOOM orqali bo'lib o'tadi:\n\n${ev.title}\n🔗 ${ev.url}`,
       );
-      if (sent) {
+      if (result.ownerSent) {
         ev.reminded = true;
+        ev.sentTo = result.sentTo;
         changed = true;
       }
     }
