@@ -230,7 +230,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<void> {
   const text = message.text.trim();
 
   if (text.startsWith("/")) {
-    await handleCommand(tg, env, chatId, message.from, text);
+    await handleCommand(tg, env, chatId, message.from, text, message.reply_to_message?.message_id);
   }
   // Oddiy (buyruq bo'lmagan) xabarlarga bu bot javob bermaydi - u faqat admin panel
   // va ZOOM e'lon eslatmalari uchun mo'ljallangan, AI avtomatik javob funksiyasi yo'q.
@@ -242,6 +242,7 @@ async function handleCommand(
   chatId: number,
   from: TelegramUser,
   text: string,
+  replyToMessageId?: number,
 ): Promise<void> {
   const [command, ...args] = text.split(/\s+/);
   const userId = from.id;
@@ -343,6 +344,24 @@ async function handleCommand(
           ? `${targetId} adminlikdan olib tashlandi.`
           : "Bajarilmadi: bu ID admin emas, asosiy admin (egasi)ni to'g'ridan-to'g'ri o'chirib bo'lmaydi, yoki oxirgi (yagona) adminni olib tashlab bo'lmaydi.",
       );
+      return;
+    }
+
+    case "/delete": {
+      // Telegram Bot API'da xabarni mazmuni bo'yicha qidirib bo'lmaydi - faqat aniq ID
+      // orqali o'chiriladi. Shuning uchun bu buyruq FAQAT kerakli xabarga "javob" (reply)
+      // tarzida yuborilganda ishlaydi - shu reply orqali Telegram bizga aniq qaysi xabar
+      // ekanini ishonchli aytib beradi (taxmin qilishga hojat yo'q, boshqa xabarni tasodifan
+      // o'chirib qo'yish xavfi yo'q).
+      if (!(await requireAdmin())) return;
+      if (!replyToMessageId) {
+        await tg.sendMessage(chatId, "Bu buyruqni o'chirmoqchi bo'lgan xabarga JAVOB (reply) qilib yuboring.");
+        return;
+      }
+      const deleted = await tg.deleteMessage(chatId, replyToMessageId);
+      if (!deleted) {
+        await tg.sendMessage(chatId, "O'chirib bo'lmadi - xabar juda eski (48 soatdan oshgan) yoki allaqachon o'chirilgan bo'lishi mumkin.");
+      }
       return;
     }
 
