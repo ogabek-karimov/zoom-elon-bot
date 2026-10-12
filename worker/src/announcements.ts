@@ -1,12 +1,8 @@
-import { getAdmins, getOwner, getSubscribers, isBroadcastEnabled } from "./store";
+import { getAdmins, getOwner, getSubscribers, isBroadcastEnabled, recordBroadcastBatch, type SentMessageRef } from "./store";
 import { telegramApi } from "./telegram";
 import type { Env } from "./types";
 
-/** Bitta chatga yuborilgan bitta xabarning manzili - keyinroq o'sha ANIQ xabarni o'chirish uchun kerak bo'ladi. */
-export interface SentMessageRef {
-  chatId: number;
-  messageId: number;
-}
+export type { SentMessageRef };
 
 export interface PendingEvent {
   url: string;
@@ -70,6 +66,11 @@ async function broadcastToAdminsAndSubscribers(
       if (messageId !== null) sentTo.push({ chatId: id, messageId });
     }
   }
+
+  // Shu xabar bir nechta chatga ketdi - keyinroq asosiy admin o'z nusxasiga /delete
+  // qo'llasa, qolgan barcha nusxalarini ham topib o'chira olishi uchun qayd etamiz.
+  await recordBroadcastBatch(env, sentTo);
+
   return { ownerSent, sentTo };
 }
 

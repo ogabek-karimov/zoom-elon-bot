@@ -6,6 +6,13 @@ const ADMIN_NAMES_KEY = "admin_names";
 const SUBSCRIBERS_KEY = "subscribers";
 const SUBSCRIBER_CAP = 5000; // cheksiz o'smasin - eng eskilari chetlanadi
 const BROADCAST_ENABLED_KEY = "broadcast_enabled";
+const BROADCAST_BATCHES_KEY = "broadcast_batches";
+const BROADCAST_BATCH_CAP = 50; // so'nggi 50 ta "hammaga yuborilgan xabar" partiyasi saqlanadi
+
+export interface SentMessageRef {
+  chatId: number;
+  messageId: number;
+}
 
 /** Reads the admin list from KV, seeding it from ADMIN_IDS on first use. */
 export async function getAdmins(env: Env): Promise<number[]> {
@@ -129,4 +136,46 @@ export async function isBroadcastEnabled(env: Env): Promise<boolean> {
 
 export async function setBroadcastEnabled(env: Env, enabled: boolean): Promise<void> {
   await env.BOT_KV.put(BROADCAST_ENABLED_KEY, String(enabled));
+}
+
+/**
+ * Bir xil matn bir nechta chatga ("hammaga"/"barcha adminlarga" turidagi) yuborilganda,
+ * qayerlarga aynan qaysi xabar ID bilan yetganini eslab qoladi - shunda asosiy admin
+ * O'ZINING nusxasiga /delete buyrug'ini qo'llasa, bot buni "guruh xabari" ekanini aniqlab,
+ * QOLGAN HAMMA nusxasini ham (boshqa adminlar, obunachilar chatidan) o'chira oladi. Yagona
+ * (bir kishiga) yuborilgan xabarlar bu yerda qayd etilmaydi - ularga oddiy, bitta chatga
+ * tegishli o'chirish yetarli. Ro'yxat cheksiz o'smasligi uchun so'nggi 50 tasi saqlanadi.
+ */
+export async function recordBroadcastBatch(env: Env, sentTo: SentMessageRef[]): Promise<void> {
+  if (sentTo.length < 2) return;
+  const raw = await env.BOT_KV.get(BROADCAST_BATCHES_KEY);
+  let batches: SentMessageRef[][] = [];
+  if (raw) {
+    try {
+      batches = JSON.parse(raw) as SentMessageRef[][];
+    } catch {
+      batches = [];
+    }
+  }
+  batches.push(sentTo);
+  const capped = batches.length > BROADCAST_BATCH_CAP ? batches.slice(batches.length - BROADCAST_BATCH_CAP) : batches;
+  await env.BOT_KV.put(BROADCAST_BATCHES_KEY, JSON.stringify(capped));
+}
+
+/** Berilgan chat+xabar ID qaysi "guruh xabari"ga tegishli ekanini topadi - topilsa, o'sha partiyadagi BARCHA manzillarni qaytaradi. */
+export async function findBroadcastBatch(env: Env, chatId: number, messageId: number): Promise<SentMessageRef[] | null> {
+  const raw = await env.BOT_KV.get(BROADCAST_BATCHES_KEY);
+  if (!raw) return null;
+  let batches: SentMessageRef[][] = [];
+  try {
+    batches = JSON.parse(raw) as SentMessageRef[][];
+  } catch {
+    return null;
+  }
+  for (const batch of batches) {
+    if (batch.some((ref) => ref.chatId === chatId && ref.messageId === messageId)) {
+      return batch;
+    }
+  }
+  return null;
 }

@@ -4,6 +4,7 @@ import { telegramApi, type InlineKeyboard } from "./telegram";
 import {
   addAdmin,
   addSubscriber,
+  findBroadcastBatch,
   getAdminNames,
   getAdmins,
   getOwner,
@@ -11,10 +12,12 @@ import {
   isAdmin,
   isBroadcastEnabled,
   isOwner,
+  recordBroadcastBatch,
   removeAdmin,
   setAdminName,
   setBroadcastEnabled,
   transferOwnership,
+  type SentMessageRef,
 } from "./store";
 import type { Env, TelegramCallbackQuery, TelegramUpdate, TelegramUser } from "./types";
 import { renderAppHtml } from "./webapp";
@@ -179,9 +182,14 @@ async function handleApiAction(request: Request, env: Env): Promise<Response> {
       if (!text) return new Response("Xabar matni bo'sh bo'lmasin.", { status: 400 });
       const tg = telegramApi(env.TELEGRAM_BOT_TOKEN);
       const subscribers = await getSubscribers(env);
+      const sentTo: SentMessageRef[] = [];
       for (const id of subscribers) {
-        await tg.sendMessage(id, `📢 E'lon:\n\n${text}`);
+        const messageId = await tg.sendMessage(id, `📢 E'lon:\n\n${text}`);
+        if (messageId !== null) sentTo.push({ chatId: id, messageId });
       }
+      // Asosiy admin keyinroq o'z nusxasiga /delete qo'llasa, qolgan barcha nusxalarini
+      // ham topib o'chira olishi uchun qayd etamiz (recordBroadcastBatch).
+      await recordBroadcastBatch(env, sentTo);
       break;
     }
     case "remove_admin": {
@@ -358,6 +366,26 @@ async function handleCommand(
         await tg.sendMessage(chatId, "Bu buyruqni o'chirmoqchi bo'lgan xabarga JAVOB (reply) qilib yuboring.");
         return;
       }
+
+      // Faqat ASOSIY ADMIN uchun: agar javob qilingan xabar "hammaga"/"barcha adminlarga"
+      // turidagi yuborilgan bo'lsa (masalan ZOOM eslatmasi yoki "barchaga xabar"), shu
+      // nusxaning o'zini emas, BARCHA qabul qiluvchilardagi nusxalarni o'chiradi. Kichik
+      // adminlar esa har doim faqat o'z chatidagi bitta xabarni o'chira oladi - boshqa
+      // birovning chatiga tegmaydi.
+      const batch = (await isOwner(env, userId)) ? await findBroadcastBatch(env, chatId, replyToMessageId) : null;
+
+      if (batch) {
+        let allOk = true;
+        for (const ref of batch) {
+          const ok = await tg.deleteMessage(ref.chatId, ref.messageId);
+          if (!ok) allOk = false;
+        }
+        if (!allOk) {
+          await tg.sendMessage(chatId, "Ba'zi nusxalarni o'chirib bo'lmadi (48 soatdan oshgan yoki allaqachon o'chirilgan bo'lishi mumkin).");
+        }
+        return;
+      }
+
       const deleted = await tg.deleteMessage(chatId, replyToMessageId);
       if (!deleted) {
         await tg.sendMessage(chatId, "O'chirib bo'lmadi - xabar juda eski (48 soatdan oshgan) yoki allaqachon o'chirilgan bo'lishi mumkin.");
